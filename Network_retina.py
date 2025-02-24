@@ -1,53 +1,77 @@
 import cv2
+import threading
 import numpy as np
 from retinaface import RetinaFace
 
-# Define multiple camera sources (Update these)q
+# Define camera sources
 CAMERA_SOURCES = {
-    "camera1": "http://10.24.95.54:4747/video",  # DroidCam 1 (Update IP)
-    ##"camera2": "http://192.168.1.104:4747/video",  # DroidCam 2 (Update IP)
+    "camera1": "http://10.24.95.58:4747/video",
+    "camera2": "http://10.24.95.54:4747/video",
+    "camera3": "http://10.24.93.175:4747/video",
+    "camera4": "http://10.24.94.21:4747/video"
 }
 
-# Open video captures for both cameras
-video_captures = {name: cv2.VideoCapture(src) for name, src in CAMERA_SOURCES.items()}
-current_camera = "camera1"  # Default camera
+frames = {name: None for name in CAMERA_SOURCES}
+lock = threading.Lock()  # Lock to prevent race conditions
 
-while True:
-    # Read the current camera feed
-    success, frame = video_captures[current_camera].read()
-    if not success:
-        print(f"Error: Unable to access {current_camera}")
-        break
+def detect_faces(frame):
+    """Run RetinaFace model on the frame to detect faces."""
+    if frame is None or frame.size == 0:
+        print("[ERROR] Empty frame received in detect_faces()")
+        return None
 
-    # Face detection using RetinaFace
     faces = RetinaFace.detect_faces(frame)
     
-    if isinstance(faces, dict):  # If faces are detected
-        for face_id, face in faces.items():
+    if isinstance(faces, dict) and faces:  # Check if detection was successful
+        for _, face in faces.items():
             x1, y1, x2, y2 = face["facial_area"]
-            
-            # Draw bounding box around the detected face
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, "Face", (x1, y1 - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Draw bounding box
+    else:
+        print("[INFO] No faces detected in the frame.")
 
-    # Show the live feed
-    cv2.imshow("Live Stream - Press '1' or '2' to Switch", frame)
+    return frame
 
-    # Wait for key press (1ms delay)
-    key = cv2.waitKey(1) & 0xFF
+def capture_and_process_camera(camera_name, url):
+    """Capture video and run RetinaFace detection in a separate thread."""
+    cap = cv2.VideoCapture(url)
+    
+    if not cap.isOpened():
+        print(f"[ERROR] Unable to open camera: {camera_name}")
+        return
 
-    # Switch cameras on key press
-    if key == ord('1'):
-        current_camera = "camera1"
-        print("Switched to Camera 1")
-    elif key == ord('2'):
-        current_camera = "camera2"
-        print("Switched to Camera 2")
-    elif key == ord('q'):  # Press 'q' to exit
+    while True:
+        ret, frame = cap.read()
+        
+        if not ret or frame is None:
+            print(f"[ERROR] Failed to grab frame from {camera_name}")
+            break
+
+        print(f"[INFO] Captured frame from {camera_name}")
+
+        # Perform face detection
+        processed_frame = detect_faces(frame)
+
+        if processed_frame is not None:
+            with lock:
+                frames[camera_name] = processed_frame.copy()  # Copy the frame to prevent corruption
+
+    cap.release()
+
+# Start camera threads
+threads = []
+for name, url in CAMERA_SOURCES.items():
+    thread = threading.Thread(target=capture_and_process_camera, args=(name, url), daemon=True)
+    thread.start()
+    threads.append(thread)
+
+# Display video streams
+while True:
+    with lock:
+        for name, frame in frames.items():
+            if frame is not None:
+                cv2.imshow(f"Live Stream - {name}", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-# Release resources
-for cap in video_captures.values():
-    cap.release()
 cv2.destroyAllWindows()
